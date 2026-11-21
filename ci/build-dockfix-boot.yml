@@ -1,0 +1,102 @@
+name: Build dock-fix boot image
+
+# Builds a patched boot.img for every new LineageOS instantnoodle build:
+# stock boot.img from download.lineageos.org + kernel built from the exact
+# kernel revision of that build with patches/op8-dock-fixes-<VERSION>.patch.
+
+on:
+  schedule:
+    - cron: "37 21 * * *"   # every day 06:37 KST
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Lineage build date (YYYYMMDD). Empty = latest"
+        required: false
+        default: ""
+      force:
+        description: "Rebuild even if a release already exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-dockfix-boot
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick Lineage build
+        id: pick
+        run: |
+          python3 ci/pick_build.py "${{ inputs.date }}" | tee -a "$GITHUB_OUTPUT"
+          echo "patch_version=$(cat patches/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Check for existing release
+        id: check
+        run: |
+          tag="${{ steps.pick.outputs.date }}-${{ steps.pick.outputs.patch_version }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1 && [ "${{ inputs.force }}" != "true" ]; then
+            echo "Release $tag already exists, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download stock images
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          mkdir -p dl
+          curl -fsSL --retry 3 -o dl/boot.img "${{ steps.pick.outputs.boot_url }}"
+          curl -fsSL --retry 3 -o dl/build-manifest.xml "${{ steps.pick.outputs.manifest_url }}"
+          echo "${{ steps.pick.outputs.boot_sha256 }}  dl/boot.img" | sha256sum -c -
+          echo "${{ steps.pick.outputs.manifest_sha256 }}  dl/build-manifest.xml" | sha256sum -c -
+
+      - name: Install toolchain
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 lld-18 llvm-18 bc bison flex \
+            libssl-dev libelf-dev lz4 cpio python3 patch
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+
+      - name: Build kernel and boot image
+        if: steps.check.outputs.skip == 'false'
+        env:
+          DATE: ${{ steps.pick.outputs.date }}
+          BOOT_IMG: dl/boot.img
+          MANIFEST: dl/build-manifest.xml
+        run: |
+          clang --version | head -1
+          bash ci/build-dockfix-boot.sh
+
+      - name: Publish release
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          tag="${{ steps.check.outputs.tag }}"
+          {
+            echo "Dock-fix boot image for **${{ steps.pick.outputs.zip }}**."
+            echo
+            echo '```json'
+            cat out/build-info.json
+            echo '```'
+            echo
+            echo "- Stock boot.img: ${{ steps.pick.outputs.boot_url }}"
+            echo "- Kernel source: https://github.com/LineageOS/android_kernel_oneplus_sm8250/commit/$(jq -r .kernel_revision out/build-info.json)"
+            echo "  + [patches/op8-dock-fixes-${{ steps.pick.outputs.patch_version }}.patch](https://github.com/${{ github.repository }}/blob/${{ github.sha }}/patches/op8-dock-fixes-${{ steps.pick.outputs.patch_version }}.patch)"
+            echo "- Kernel config is attached. Install with \`tools/flash-dockfix.ps1\` (see docs/auto-update.md)."
+          } > out/notes.md
+          gh release delete "$tag" --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create "$tag" \
+            out/boot-dockfix-*.img out/boot-dockfix-*.img.sha256 \
+            out/kernel-*.config out/build-info.json \
+            --title "$tag" --notes-file out/notes.md
