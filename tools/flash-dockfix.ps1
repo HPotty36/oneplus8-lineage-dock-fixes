@@ -33,13 +33,16 @@ $Cache = Join-Path $PSScriptRoot "cache"
 $Remote = "/data/local/tmp/dockfix-boot.img"
 New-Item -ItemType Directory -Force -Path $Cache | Out-Null
 
-function Adb {
+$AdbExe = (Get-Command adb -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if (-not $AdbExe) { throw "adb not found in PATH" }
+
+function Invoke-Adb {
     $ErrorActionPreference = "Continue"   # adb writes progress to stderr
-    $out = & adb @args 2>&1
+    $out = & $AdbExe @args 2>&1
     if ($LASTEXITCODE -ne 0) { throw "adb $($args -join ' ') failed: $out" }
     return ($out | Out-String).Trim()
 }
-function Sh([string]$cmd) { return Adb shell $cmd }
+function Sh([string]$cmd) { return Invoke-Adb shell $cmd }
 function PartHash([string]$slot, [long]$size) {
     if ($size -gt 0) { $h = Sh "head -c $size /dev/block/by-name/boot$slot | sha256sum" }
     else { $h = Sh "sha256sum /dev/block/by-name/boot$slot" }
@@ -62,14 +65,14 @@ function Fetch([string]$url, [string]$sha, [string]$name) {
 }
 
 # --- phone ---------------------------------------------------------------
-Adb wait-for-device | Out-Null
+Invoke-Adb wait-for-device | Out-Null
 $codename = Sh "getprop ro.lineage.device"
 if ($codename -ne $Device) { throw "Connected device is '$codename', expected $Device" }
 $running = Sh "getprop ro.lineage.version"
 $curSlot = Sh "getprop ro.boot.slot_suffix"
-Adb root | Out-Null
+Invoke-Adb root | Out-Null
 Start-Sleep -Seconds 2
-Adb wait-for-device | Out-Null
+Invoke-Adb wait-for-device | Out-Null
 if ((Sh "id -u") -ne "0") { throw "adb root is not available (needs a userdebug build)" }
 Write-Host "Phone: $running, running slot $curSlot"
 
@@ -147,7 +150,7 @@ if (-not $Yes) {
 foreach ($p in $plan) {
     $local = Fetch $p.Url $p.Sha $p.Name
     Write-Host "  boot$($p.Slot): pushing $($p.Name)"
-    Adb push $local $Remote | Out-Null
+    Invoke-Adb push $local $Remote | Out-Null
     if ((Sh "sha256sum $Remote").Split(" ")[0] -ne $p.Sha) { throw "pushed file is corrupt" }
     Sh "dd if=$Remote of=/dev/block/by-name/boot$($p.Slot) bs=4194304 conv=fsync && sync" | Out-Null
     Sh "rm -f $Remote" | Out-Null
@@ -155,5 +158,5 @@ foreach ($p in $plan) {
     Write-Host "  boot$($p.Slot): written and verified"
 }
 
-if ($Reboot) { Write-Host "Rebooting ..."; Adb reboot | Out-Null }
+if ($Reboot) { Write-Host "Rebooting ..."; Invoke-Adb reboot | Out-Null }
 else { Write-Host "Done. The change takes effect on the next reboot." }
