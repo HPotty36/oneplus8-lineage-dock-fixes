@@ -5,13 +5,15 @@
 #   DATE            Lineage build date, YYYYMMDD
 #   BOOT_IMG        path to that build's stock boot.img (already sha256-checked)
 #   MANIFEST        path to that build's build-manifest.xml
-#   WORKDIR         scratch directory (default: ./work)
+#   WORKDIR         scratch directory (default: /tmp/dfw). Keep the path short:
+#                   qcacld-3.0 compile commands carry hundreds of -I flags and
+#                   overflow the 128 KiB argument limit under long paths.
 #   OUTDIR          output directory (default: ./out)
 # Needs: clang/lld/llvm 18, bc bison flex libssl-dev libelf-dev lz4 cpio python3 git
 set -euo pipefail
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
-WORKDIR=${WORKDIR:-$PWD/work}
+WORKDIR=${WORKDIR:-/tmp/dfw}
 OUTDIR=${OUTDIR:-$PWD/out}
 PATCH_VERSION=$(cat "$REPO_DIR/patches/VERSION")
 PATCH="$REPO_DIR/patches/op8-dock-fixes-$PATCH_VERSION.patch"
