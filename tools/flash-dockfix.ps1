@@ -130,6 +130,11 @@ foreach ($slot in "_a", "_b") {
     }
     if (-not $date) { continue }
     $want = $byDate[$date]
+    $runningDate = ($running -split "-")[1]
+    if (-not $want -and $slot -ne $curSlot -and $date -lt $runningDate) {
+        Write-Host ("  boot{0}: older build than the running one, left alone" -f $slot)
+        continue
+    }
     if (-not $want) {
         Write-Warning "boot${slot}: no dock-fix image for build $date yet. Run: gh workflow run build-dockfix-boot.yml -R $Repo -f date=$date"
         continue

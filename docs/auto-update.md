@@ -55,6 +55,12 @@ powershell -ExecutionPolicy Bypass -File tools\flash-dockfix.ps1 -Reboot
 
 fastboot가 필요 없고, 원본 boot.img는 LineageOS 서버에서 다시 받을 수 있어서 따로 백업하지 않습니다.
 
+## 검증
+
+- 첫 자동 빌드 `20261117-v5`를 이 스크립트(`-Force`)로 boot_a에 설치 → 재부팅 후 커널 `...-dockfix-...`, 부트 옵션 두 개 적용, 커널 오류 없음, Wi-Fi 정상 확인.
+- 다시 실행하면 boot_a를 `dock-fix 20261117-v5`로 알아보고 아무것도 하지 않음.
+- 자동 빌드 이미지는 직접 테스트한 v5와 램디스크·DTB·부트 옵션이 같고, 커널은 같은 소스·설정·컴파일러(clang 18.1.3)로 빌드됨.
+
 ## 안전장치
 
 - 빌드 날짜가 다른 이미지는 절대 쓰지 않음 (슬롯별로 원본 해시로 빌드를 확인).
