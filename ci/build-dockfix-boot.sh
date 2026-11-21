@@ -76,7 +76,7 @@ done
 # 7. repack
 NAME="boot-dockfix-$DATE-$PATCH_VERSION.img"
 MKBOOTIMG_DIR="$WORKDIR/mkbootimg" EXTRA_CMDLINE="$EXTRA_CMDLINE" \
-  "$REPO_DIR/scripts/repack-boot.sh" "$BOOT_IMG" "$IMAGE" "$OUTDIR/$NAME"
+  bash "$REPO_DIR/scripts/repack-boot.sh" "$BOOT_IMG" "$IMAGE" "$OUTDIR/$NAME"
 
 IMG_SHA=$(sha256sum "$OUTDIR/$NAME" | cut -d' ' -f1)
 echo "$IMG_SHA  $NAME" > "$OUTDIR/$NAME.sha256"
