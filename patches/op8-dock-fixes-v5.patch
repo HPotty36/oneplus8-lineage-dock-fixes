@@ -1,0 +1,329 @@
+diff --git a/drivers/power/oplus/charger_ic/oplus_battery_msm8250.c b/drivers/power/oplus/charger_ic/oplus_battery_msm8250.c
+index f197cc395..55ac01dc7 100644
+--- a/drivers/power/oplus/charger_ic/oplus_battery_msm8250.c
++++ b/drivers/power/oplus/charger_ic/oplus_battery_msm8250.c
+@@ -8274,6 +8274,16 @@ int smblib_set_prop_pr_swap_in_progress(struct smb_charger *chg, const union pow
+ 		/* enable DRP */
+ 		if (reg_val != 0)
+ 			rc = smblib_masked_write(chg, TYPE_C_MODE_CFG_REG, TYPEC_POWER_ROLE_CMD_MASK, reg_val);
++		else if (chip->otg_switch)
++			/*
++			 * Upstream always clears the role lock here. Skipping it
++			 * leaves the port sink-only after a PR swap, or fully
++			 * disabled after PD error recovery, while chg->power_role
++			 * below claims DUAL (so the following PR_DUAL request is
++			 * ignored). A dock that stays plugged in is then never
++			 * detected again until the cable is re-inserted.
++			 */
++			rc = smblib_masked_write(chg, TYPE_C_MODE_CFG_REG, TYPEC_POWER_ROLE_CMD_MASK, 0);
+ #endif
+ 		if (rc < 0) {
+ 			smblib_err(chg, "Couldn't enable DRP rc=%d\n", rc);
+@@ -9787,10 +9797,24 @@ static int smbchg_chargerid_switch_gpio_init(struct oplus_chg_chip *chip)
+ 	return 0;
+ }
+ 
++extern bool oplus_usbpd_is_dfp(void);
++
+ void smbchg_set_chargerid_switch_val(int value)
+ {
+ 	struct oplus_chg_chip *chip = g_oplus_chip;
+ 
++	/*
++	 * Switching the charger-ID mux disconnects D+/D- from the USB PHY.
++	 * When we are the USB host (e.g. a powered USB-C dock with keyboard
++	 * and mouse), doing so drops every USB 2.0 device on the dock and can
++	 * leave the xHCI teardown stuck later on. Charger-ID detection is only
++	 * needed for proprietary fast chargers, so skip it in host mode.
++	 */
++	if (value && oplus_usbpd_is_dfp()) {
++		chg_err("USB host mode, keep D+/D- on the USB PHY, skip chargerid switch\n");
++		return;
++	}
++
+ 	if (chip->normalchg_gpio.chargerid_switch_gpio <= 0) {
+ 		chg_err("chargerid_switch_gpio not exist, return\n");
+ 		return;
+diff --git a/drivers/power/oplus/vooc_ic/oplus_vooc_fw.c b/drivers/power/oplus/vooc_ic/oplus_vooc_fw.c
+index 4225ff072..129a27549 100644
+--- a/drivers/power/oplus/vooc_ic/oplus_vooc_fw.c
++++ b/drivers/power/oplus/vooc_ic/oplus_vooc_fw.c
+@@ -1776,6 +1776,8 @@ void opchg_set_switch_earphone(struct oplus_vooc_chip *chip)
+ 	return;
+ }
+ 
++extern bool oplus_usbpd_is_dfp(void);
++
+ void opchg_set_switch_mode(struct oplus_vooc_chip *chip, int mode)
+ {
+ 	int retry = 10;
+@@ -1789,6 +1791,11 @@ void opchg_set_switch_mode(struct oplus_vooc_chip *chip, int mode)
+ 		chg_err(" mcu_update_ing, don't switch to vooc mode\n");
+ 		return;
+ 	}
++	/* Same reason as the charger-ID switch: keep USB 2.0 working in host mode */
++	if (mode == VOOC_CHARGER_MODE && oplus_usbpd_is_dfp()) {
++		chg_err(" USB host mode, don't switch D+/D- to vooc mode\n");
++		return;
++	}
+ 
+ 	mcu_hwid_type = get_vooc_mcu_type(chip);
+ 
+diff --git a/drivers/usb/core/hub.c b/drivers/usb/core/hub.c
+index b459e1e23..624ac939c 100644
+--- a/drivers/usb/core/hub.c
++++ b/drivers/usb/core/hub.c
+@@ -667,6 +667,42 @@ static void kick_hub_wq(struct usb_hub *hub)
+ 	kref_put(&hub->kref, hub_release);
+ }
+ 
++/*
++ * A root port can lose its device in the middle of enumeration (e.g. a USB-C
++ * power role swap briefly drops VBUS to a dock) and see it come back without
++ * a further connect-change event, leaving the device present but never
++ * enumerated. Re-check such ports once things have settled.
++ */
++#define HUB_RESCAN_DELAY_MS	1500
++#define HUB_RESCAN_MAX		3
++
++static void hub_rescan_work(struct work_struct *work)
++{
++	struct usb_hub *hub = container_of(to_delayed_work(work),
++					   struct usb_hub, rescan_work);
++	int port1;
++
++	for (port1 = 1; port1 <= USB_MAXCHILDREN; port1++)
++		if (test_and_clear_bit(port1, hub->rescan_bits))
++			set_bit(port1, hub->change_bits);
++
++	kick_hub_wq(hub);
++}
++
++static void hub_schedule_rescan(struct usb_hub *hub, int port1)
++{
++	if (hub->disconnected || hub->rescan_count >= HUB_RESCAN_MAX)
++		return;
++
++	hub->rescan_count++;
++	set_bit(port1, hub->rescan_bits);
++	dev_info(&hub->ports[port1 - 1]->dev,
++		 "enumeration interrupted, re-checking port in %d ms\n",
++		 HUB_RESCAN_DELAY_MS);
++	mod_delayed_work(system_wq, &hub->rescan_work,
++			 msecs_to_jiffies(HUB_RESCAN_DELAY_MS));
++}
++
+ void usb_kick_hub_wq(struct usb_device *hdev)
+ {
+ 	struct usb_hub *hub = usb_hub_to_struct_hub(hdev);
+@@ -1743,6 +1779,7 @@ static void hub_disconnect(struct usb_interface *intf)
+ 	 * will not try to remove any pending work item.
+ 	 */
+ 	hub->disconnected = 1;
++	cancel_delayed_work_sync(&hub->rescan_work);
+ 
+ 	/* Disconnect all children and quiesce the hub */
+ 	hub->error = 0;
+@@ -1903,6 +1940,7 @@ static int hub_probe(struct usb_interface *intf, const struct usb_device_id *id)
+ 	hub->hdev = hdev;
+ 	INIT_DELAYED_WORK(&hub->leds, led_work);
+ 	INIT_DELAYED_WORK(&hub->init_work, NULL);
++	INIT_DELAYED_WORK(&hub->rescan_work, hub_rescan_work);
+ 	INIT_WORK(&hub->events, hub_event);
+ 	usb_get_intf(intf);
+ 	usb_get_dev(hdev);
+@@ -5079,6 +5117,7 @@ static void hub_port_connect(struct usb_hub *hub, int port1, u16 portstatus,
+ 	struct usb_device *udev = port_dev->child;
+ 	static int unreliable_port = -1;
+ 	bool retry_locked;
++	bool interrupted = false;
+ 
+ 	/* Disconnect any existing devices under this port */
+ 	if (udev) {
+@@ -5262,6 +5301,7 @@ static void hub_port_connect(struct usb_hub *hub, int port1, u16 portstatus,
+ 		if (status)
+ 			dev_dbg(hub->intfdev, "%dmA power budget left\n", status);
+ 
++		hub->rescan_count = 0;
+ 		return;
+ 
+ loop_disable:
+@@ -5277,6 +5317,7 @@ static void hub_port_connect(struct usb_hub *hub, int port1, u16 portstatus,
+ 		usb_put_dev(udev);
+ 		if ((status == -ENOTCONN) || (status == -ENOTSUPP))
+ 			break;
++		interrupted = true;
+ 
+ 		/* When halfway through our retry count, power-cycle the port */
+ 		if (i == (SET_CONFIG_TRIES / 2) - 1) {
+@@ -5287,6 +5328,10 @@ static void hub_port_connect(struct usb_hub *hub, int port1, u16 portstatus,
+ 			msleep(hub_power_on_good_delay(hub));
+ 		}
+ 	}
++	/* device vanished after a failed attempt: look again later */
++	if (!hdev->parent && status == -ENOTCONN && interrupted)
++		hub_schedule_rescan(hub, port1);
++
+ 	if (hub->hdev->parent ||
+ 			!hcd->driver->port_handed_over ||
+ 			!(hcd->driver->port_handed_over)(hcd, port1)) {
+diff --git a/drivers/usb/core/hub.h b/drivers/usb/core/hub.h
+index d1845e5ff..24362b288 100644
+--- a/drivers/usb/core/hub.h
++++ b/drivers/usb/core/hub.h
+@@ -45,6 +45,8 @@ struct usb_hub {
+ 							children */
+ 	unsigned long		warm_reset_bits[1]; /* ports requesting warm
+ 							reset recovery */
++	unsigned long		rescan_bits[1]; /* ports to re-check after an
++							interrupted enumeration */
+ #if USB_MAXCHILDREN > 31 /* 8*sizeof(unsigned long) - 1 */
+ #error event_bits[] is too short!
+ #endif
+@@ -69,6 +71,8 @@ struct usb_hub {
+ 	u8			indicator[USB_MAXCHILDREN];
+ 	struct delayed_work	leds;
+ 	struct delayed_work	init_work;
++	struct delayed_work	rescan_work;
++	u8			rescan_count;
+ 	struct work_struct      events;
+ 	struct usb_port		**ports;
+ };
+diff --git a/drivers/usb/pd/policy_engine.c b/drivers/usb/pd/policy_engine.c
+index d80296c2f..6647c0d0c 100644
+--- a/drivers/usb/pd/policy_engine.c
++++ b/drivers/usb/pd/policy_engine.c
+@@ -579,6 +579,21 @@ static inline void stop_usb_host(struct usbpd *pd)
+ 	extcon_set_state_sync(pd->extcon, EXTCON_USB_HOST, 0);
+ }
+ 
++/*
++ * Run host mode as USB 2.0 only. With some USB-C docks (VIA VL815 hub behind
++ * DP alt mode) a full-speed keyboard behind the hub fails to enumerate after a
++ * power role swap while the SuperSpeed side of the hub stays linked.
++ */
++static bool host_hs_only;
++module_param(host_hs_only, bool, 0644);
++MODULE_PARM_DESC(host_hs_only, "Never use SuperSpeed in USB host mode");
++
++bool usbpd_host_hs_only(void)
++{
++	return host_hs_only;
++}
++EXPORT_SYMBOL(usbpd_host_hs_only);
++
+ static inline void start_usb_host(struct usbpd *pd, bool ss)
+ {
+ 	enum plug_orientation cc = usbpd_get_plug_orientation(pd);
+@@ -589,7 +604,7 @@ static inline void start_usb_host(struct usbpd *pd, bool ss)
+ 	extcon_set_property(pd->extcon, EXTCON_USB_HOST,
+ 			EXTCON_PROP_USB_TYPEC_POLARITY, val);
+ 
+-	val.intval = ss;
++	val.intval = ss && !host_hs_only;
+ 	extcon_set_property(pd->extcon, EXTCON_USB_HOST,
+ 			EXTCON_PROP_USB_SS, val);
+ 
+@@ -627,6 +642,17 @@ static inline void start_usb_peripheral(struct usbpd *pd)
+ 	extcon_set_state_sync(pd->extcon, EXTCON_USB, 1);
+ }
+ 
++/*
++ * Docks that are already powered by their own charger hand us the host role
++ * via DR_Swap while we are the power sink. With such docks the SuperSpeed
++ * link has been seen failing to train ("Cannot enable"), stalling USB 2.0
++ * enumeration behind it for ~16s. Optionally run USB 2.0 only in that case.
++ */
++static bool hs_only_sink_dfp;
++module_param(hs_only_sink_dfp, bool, 0644);
++MODULE_PARM_DESC(hs_only_sink_dfp,
++	"Use USB 2.0 only when becoming host via DR_Swap while power sink");
++
+ static void start_usb_peripheral_work(struct work_struct *w)
+ {
+ 	struct usbpd *pd = container_of(w, struct usbpd, start_periph_work);
+@@ -2039,8 +2065,17 @@ static void dr_swap(struct usbpd *pd)
+ 		pd_phy_update_roles(pd->current_dr, pd->current_pr);
+ 
+ 		stop_usb_peripheral(pd);
+-		if (pd->peer_usb_comm)
+-			start_usb_host(pd, true);
++		/*
++		 * Many USB-C docks with power pass-through clear the
++		 * "USB Communications Capable" bit in their Source_Capabilities
++		 * once a charger is attached, yet still expose a USB hub behind
++		 * the DisplayPort alternate mode. The partner explicitly asked us
++		 * to become DFP, so start the host stack regardless; otherwise
++		 * wired keyboards/mice behind such docks never enumerate while
++		 * the phone is charging from them.
++		 */
++		start_usb_host(pd, !(hs_only_sink_dfp &&
++					pd->current_pr == PR_SINK));
+ 
+ 		typec_set_data_role(pd->typec_port, TYPEC_HOST);
+ 
+@@ -2112,6 +2147,18 @@ bool typec_is_otg_mode(void)
+ 	else
+ 		return false;
+ }
++
++/*
++ * True while we are the USB host (DFP), independent of the power role.
++ * Used by the charger driver to avoid re-routing D+/D- away from the USB
++ * PHY (charger-ID / VOOC detection) while devices are attached through a
++ * powered dock.
++ */
++bool oplus_usbpd_is_dfp(void)
++{
++	return pd_lobal != NULL && pd_lobal->current_dr == DR_DFP;
++}
++EXPORT_SYMBOL(oplus_usbpd_is_dfp);
+ #endif
+ 
+ static int enable_vbus(struct usbpd *pd)
+diff --git a/include/linux/usb/usbpd.h b/include/linux/usb/usbpd.h
+index 87dff93fd..25eb42d8e 100644
+--- a/include/linux/usb/usbpd.h
++++ b/include/linux/usb/usbpd.h
+@@ -101,6 +101,9 @@ int usbpd_send_svdm(struct usbpd *pd, u16 svid, u8 cmd,
+  */
+ enum plug_orientation usbpd_get_plug_orientation(struct usbpd *pd);
+ 
++/* true if USB host mode is restricted to USB 2.0 (SS lanes left unused) */
++bool usbpd_host_hs_only(void);
++
+ void usbpd_vdm_in_suspend(struct usbpd *pd, bool in_suspend);
+ #else
+ static inline struct usbpd *devm_usbpd_get_by_phandle(struct device *dev,
+@@ -139,6 +142,11 @@ static inline enum plug_orientation usbpd_get_plug_orientation(struct usbpd *pd)
+ }
+ 
+ static inline void usbpd_vdm_in_suspend(struct usbpd *pd, bool in_suspend) { }
++
++static inline bool usbpd_host_hs_only(void)
++{
++	return false;
++}
+ #endif /* IS_ENABLED(CONFIG_USB_PD_POLICY) */
+ 
+ /*
+diff --git a/techpack/display/msm/dp/dp_display.c b/techpack/display/msm/dp/dp_display.c
+index 26554a453..b0d70de68 100644
+--- a/techpack/display/msm/dp/dp_display.c
++++ b/techpack/display/msm/dp/dp_display.c
+@@ -867,8 +867,14 @@ static void dp_display_host_init(struct dp_display_private *dp)
+ 	if (dp->hpd->orientation == ORIENTATION_CC2)
+ 		flip = true;
+ 
++	/*
++	 * The USB3/DP combo PHY's common block (lane mux / orientation, PHY
++	 * mode) is programmed by the USB SS PHY when USB shares the lanes.
++	 * If USB host runs USB 2.0 only, nobody else will do it, so let DP.
++	 */
+ 	reset = dp->debug->sim_mode ? false :
+-		(!dp->hpd->multi_func || !dp->hpd->peer_usb_comm);
++		(!dp->hpd->multi_func || !dp->hpd->peer_usb_comm ||
++		 usbpd_host_hs_only());
+ 
+ 	dp->power->init(dp->power, flip);
+ 	dp->hpd->host_init(dp->hpd, &dp->catalog->hpd);

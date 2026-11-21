@@ -1,0 +1,5 @@
+# Keep the internal display on DPU composition when an external display with a
+# higher refresh rate is the pacesetter (Android 17 force_slower_follower_gpu_composition).
+# Without this, the UDFPS pressed layer gets GPU-composed and fingerprint unlock
+# fails while a 120Hz monitor is connected.
+debug.sf.force_slower_follower_gpu_composition_platform=false
