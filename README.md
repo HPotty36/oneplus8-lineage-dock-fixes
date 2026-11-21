@@ -52,11 +52,26 @@ OnePlus 8 (instantnoodle)을 USB-C 독에 꽂아 데스크톱처럼 쓰면서 �
 
 전체 패치: [`patches/op8-dock-fixes-v5.patch`](patches/op8-dock-fixes-v5.patch) (`078365e53` 기준 diff)
 
+## 업데이트 후에도 유지하기
+
+LineageOS 업데이트는 boot 파티션을 덮어써서 커널 수정이 사라집니다. 이 저장소가 자동으로 처리합니다.
+
+1. **GitHub Actions**가 매일 새 LineageOS 빌드를 확인하고, 그 빌드의 커널 커밋에 패치를 얹어 빌드한 뒤
+   패치된 boot 이미지를 [Releases](https://github.com/HPotty36/oneplus8-lineage-dock-fixes/releases)에 올립니다.
+2. 업데이트를 설치한 뒤 폰을 PC에 연결하고 한 줄 실행:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools\flash-dockfix.ps1 -Reboot
+   ```
+   두 슬롯을 보고 새 빌드가 들어간 슬롯에 맞는 이미지를 받아 확인 후 기록합니다.
+
+자세한 내용: [`docs/auto-update.md`](docs/auto-update.md)
+
 ## 문서
 
 - [`docs/test-log.md`](docs/test-log.md) — 라운드별 테스트 절차, 결과, 로그 근거
 - [`docs/fingerprint-udfps.md`](docs/fingerprint-udfps.md) — 외부 모니터 연결 시 지문 인식 문제
 - [`docs/build-and-flash.md`](docs/build-and-flash.md) — 커널 빌드, 부트 이미지 재패키징, 테스트·플래시·롤백
+- [`docs/auto-update.md`](docs/auto-update.md) — 업데이트 후 자동 재적용 (GitHub Actions + 설치 스크립트)
 - [`docs/remaining-tasks.md`](docs/remaining-tasks.md) — 남은 과제
 
 ## 스크립트
@@ -70,5 +85,5 @@ OnePlus 8 (instantnoodle)을 USB-C 독에 꽂아 데스크톱처럼 쓰면서 �
 
 - 언락된 부트로더, 루트(adb root) 환경 기준입니다. 부트 이미지를 바꾸기 전에 반드시 원본을 백업하세요.
 - `host_hs_only=1`이면 독의 USB-A·LAN 포트가 USB 2.0 속도로 동작합니다.
-- LineageOS 업데이트는 boot 파티션을 덮어쓰므로 커널 수정이 사라집니다 (`/data/local.prop`은 유지).
-- 패치는 리눅스 커널과 같은 GPL-2.0 라이선스를 따릅니다.
+- LineageOS 업데이트는 boot 파티션을 덮어쓰므로 커널 수정이 사라집니다 (`/data/local.prop`은 유지). 위의 자동 재적용 방법을 쓰세요.
+- 패치와 릴리스의 커널 바이너리는 리눅스 커널과 같은 GPL-2.0을 따릅니다. 각 릴리스에 정확한 커널 커밋, 패치, 설정을 함께 적어 둡니다.

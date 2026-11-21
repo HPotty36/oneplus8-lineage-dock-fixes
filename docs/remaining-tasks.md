@@ -47,14 +47,13 @@
 
 ## 5. LineageOS 업데이트 후에도 유지되게 하기
 
-- 업데이트는 boot 파티션을 덮어써서 커널 수정이 사라짐 (`/data/local.prop` 지문 설정은 유지).
-- 방법
-  - 업데이트마다 새 boot 이미지에 이 커널을 다시 넣기 (커널 소스가 바뀌었으면 다시 빌드).
-  - **LineageOS Gerrit에 패치 올리기** — 아래 세 개는 버그 수정이라 받아들여질 가능성이 있음:
-    1. DR_Swap 시 `peer_usb_comm`과 무관하게 호스트 시작 (`policy_engine.c`)
-    2. 호스트 모드에서 charger-ID / VOOC 스위치 생략 (`oplus_battery_msm8250.c`, `oplus_vooc_fw.c`)
-    3. PR swap 종료 시 DRP 복구 (`oplus_battery_msm8250.c`)
-  - autosuspend 끔, USB 2.0 전용은 이 독에 맞춘 우회책이라 기본값으로 올리기는 어려움 (모듈 파라미터 형태로만 제안 가능).
+- **해결(자동화)**: GitHub Actions가 새 빌드마다 패치된 boot 이미지를 만들고, `tools/flash-dockfix.ps1` 한 번으로 설치.
+  [`auto-update.md`](auto-update.md) 참고.
+- 남은 것: 업데이트 후 PC 연결이 한 번 필요함. 그리고 근본적으로는 **LineageOS Gerrit에 패치 올리기** — 아래 세 개는 버그 수정이라 받아들여질 가능성이 있음:
+  1. DR_Swap 시 `peer_usb_comm`과 무관하게 호스트 시작 (`policy_engine.c`)
+  2. 호스트 모드에서 charger-ID / VOOC 스위치 생략 (`oplus_battery_msm8250.c`, `oplus_vooc_fw.c`)
+  3. PR swap 종료 시 DRP 복구 (`oplus_battery_msm8250.c`)
+- autosuspend 끔, USB 2.0 전용은 이 독에 맞춘 우회책이라 기본값으로 올리기는 어려움 (모듈 파라미터 형태로만 제안 가능).
 
 ## 6. 기타 확인할 것
 

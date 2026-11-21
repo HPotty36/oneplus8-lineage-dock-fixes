@@ -6,7 +6,7 @@
 set -e
 STOCK=$1; IMAGE=$2; OUT=$3
 TOOLS=${MKBOOTIMG_DIR:-./mkbootimg}
-EXTRA="usbcore.autosuspend=-1 policy_engine.host_hs_only=1"
+EXTRA=${EXTRA_CMDLINE:-"usbcore.autosuspend=-1 policy_engine.host_hs_only=1"}
 WORK=$(mktemp -d)
 
 python3 "$TOOLS/unpack_bootimg.py" --boot_img "$STOCK" --out "$WORK" --format=mkbootimg > "$WORK/args"
